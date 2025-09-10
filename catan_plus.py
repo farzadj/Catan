@@ -614,18 +614,35 @@ class Game:
 
     def player_connected_nodes(self, player: Player) -> Set[int]:
         owned_nodes = set(player.settlements) | set(player.cities)
+        # Nodes blocked by opponents' settlements/cities — cannot traverse THROUGH them
+        opponent_occupied = set()
+        for p in self.players:
+            if p.id == player.id:
+                continue
+            opponent_occupied |= set(p.settlements)
+            opponent_occupied |= set(p.cities)
+
         adj = defaultdict(set)
-        for u,v in player.roads: adj[u].add(v); adj[v].add(u)
+        for u, v in player.roads:
+            adj[u].add(v)
+            adj[v].add(u)
+
         seen = set()
         stack = list(owned_nodes) + [n for e in player.roads for n in e]
         for start in stack:
-            if start in seen: continue
-            dq = deque([start]); seen.add(start)
+            if start in seen:
+                continue
+            dq = deque([start])
+            seen.add(start)
             while dq:
                 x = dq.popleft()
+                # Do not expand neighbors past an opponent-occupied node (unless it's our own building)
+                if x in opponent_occupied and x not in owned_nodes:
+                    continue
                 for y in adj[x]:
                     if y not in seen:
-                        seen.add(y); dq.append(y)
+                        seen.add(y)
+                        dq.append(y)
         return seen | owned_nodes
 
     def legal_road_spots(self, player: Player) -> List[Tuple[int,int]]:
