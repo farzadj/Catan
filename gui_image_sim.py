@@ -17,8 +17,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from collections import defaultdict, Counter
-from catan_plus_bundle.catan_plus import make_standard_board, Game
-from catan_plus_bundle.starter_eval import simulate, build_board, build_players
+from catan_plus import make_standard_board, Game
+from starter_eval import simulate, build_board, build_players
 
 
 RESOURCES = ["brick", "wood", "wool", "grain", "ore", None]
@@ -1171,10 +1171,10 @@ class BoardEditorGUI:
                          mcts_all=self.use_strong_bots.get(),
                          mcts_beam_width=int(self.mcts_beam_var.get()),
                          mcts_max_depth=int(self.mcts_depth_var.get()))
-                from catan_plus_bundle.starter_eval import build_board, build_players
+                from starter_eval import build_board, build_players
                 g.board = build_board(init["board"])  # use GUI board
                 g.players = build_players(init["players"])  # placements and starting hands
-                from catan_plus_bundle.catan_plus import HeuristicBot, MCTSBot
+                from catan_plus import HeuristicBot, MCTSBot
                 g.bots = {p.id: (MCTSBot(p.id, p.name) if (self.use_strong_bots.get() and (g.mcts_all or p.id==0)) else HeuristicBot(p.id, p.name)) for p in g.players}
                 # Start and play
                 g.snapshot("Start from GUI state")
@@ -1393,7 +1393,7 @@ class BoardEditorGUI:
         # Run heavy parsing off the UI thread to avoid freezing
         def worker(image_path: str):
             try:
-                from catan_plus_bundle.image_eval import load_state_from_qr_only, extract_state_from_visualizer_image
+                from image_eval import load_state_from_qr_only, extract_state_from_visualizer_image
             except Exception:
                 def fail():
                     self.toast("image_eval not available", "error")
@@ -1587,7 +1587,7 @@ class BoardEditorGUI:
                 g.board = build_board(init["board"])  # use GUI board
                 g.players = build_players(init["players"])  # placements and starting hands
                 # Rebuild bots to align with players
-                from catan_plus_bundle.catan_plus import HeuristicBot, MCTSBot
+                from catan_plus import HeuristicBot, MCTSBot
                 g.bots = {p.id: (MCTSBot(p.id, p.name) if (self.use_strong_bots.get() and (g.mcts_all or p.id==0)) else HeuristicBot(p.id, p.name)) for p in g.players}
                 # Start and play
                 g.snapshot("Start from GUI state")
