@@ -47,7 +47,16 @@ class BoardEditorGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Catan Board Editor & Simulator")
-        self.root.geometry("1280x820")
+        # Responsive initial size: fit within current screen without cutting
+        try:
+            self.root.update_idletasks()
+            sw = self.root.winfo_screenwidth() or 1280
+            sh = self.root.winfo_screenheight() or 820
+            init_w = min(1280, max(900, sw - 80))
+            init_h = min(820, max(600, sh - 120))
+            self.root.geometry(f"{init_w}x{init_h}")
+        except Exception:
+            self.root.geometry("1200x720")
 
         # Model
         self.board = make_standard_board(seed=0)
@@ -69,48 +78,111 @@ class BoardEditorGUI:
         self.turns_var = tk.StringVar(value="300")
 
         # Layout
-        top = ttk.Frame(root)
-        top.pack(fill=tk.X, padx=10, pady=8)
-        ttk.Label(top, text="Players:").pack(side=tk.LEFT)
-        tk.Spinbox(top, from_=2, to=4, width=4, textvariable=self.num_players, command=self.on_num_players_change).pack(side=tk.LEFT, padx=(4,10))
-        for i in range(4):
-            ttk.Entry(top, textvariable=self.player_names[i], width=14).pack(side=tk.LEFT, padx=4)
-        ttk.Label(top, text="#Games:").pack(side=tk.LEFT, padx=(16,4))
-        ttk.Entry(top, textvariable=self.games_var, width=8).pack(side=tk.LEFT)
-        ttk.Label(top, text="Max Turns:").pack(side=tk.LEFT, padx=(8,4))
-        ttk.Entry(top, textvariable=self.turns_var, width=8).pack(side=tk.LEFT)
-        self.run_btn = ttk.Button(top, text="Run Simulation", command=self.run_simulation, style="primary.TButton")
-        self.run_btn.pack(side=tk.LEFT, padx=8)
-        # Single run button
-        self.run_one_btn = ttk.Button(top, text="Run One Game", command=self.run_single_game)
-        self.run_one_btn.pack(side=tk.LEFT)
-        self.rand_btn = ttk.Button(top, text="Random Map", command=self.randomize_full_board)
-        self.rand_btn.pack(side=tk.LEFT, padx=(4,0))
-        # Strong bots toggle
-        self.use_strong_bots = tk.BooleanVar(value=True)
-        ttk.Checkbutton(top, text="Strong Bots", variable=self.use_strong_bots).pack(side=tk.LEFT, padx=8)
-        # MCTS params controls
-        ttk.Label(top, text="Beam:").pack(side=tk.LEFT)
-        self.mcts_beam_var = tk.IntVar(value=6)
-        tk.Spinbox(top, from_=1, to=64, width=4, textvariable=self.mcts_beam_var).pack(side=tk.LEFT, padx=(2,8))
-        ttk.Label(top, text="Depth:").pack(side=tk.LEFT)
-        self.mcts_depth_var = tk.IntVar(value=3)
-        tk.Spinbox(top, from_=1, to=10, width=4, textvariable=self.mcts_depth_var).pack(side=tk.LEFT, padx=(2,8))
-        # Toolbar save/load
-        ttk.Button(top, text="Save", command=self.save_board).pack(side=tk.LEFT, padx=(8,0))
-        ttk.Button(top, text="Open", command=self.load_board).pack(side=tk.LEFT, padx=(4,0))
-        ttk.Button(top, text="From Image", command=self.import_from_image).pack(side=tk.LEFT, padx=(4,0))
-        self.status = ttk.Label(top, text="Idle", anchor=tk.W)
-        self.status.pack(side=tk.LEFT, padx=12)
+        # Top toolbar that reflows on smaller widths using grid layout
+        top_container = ttk.Frame(root)
+        top_container.pack(fill=tk.X, padx=10, pady=8)
+        top = ttk.Frame(top_container)
+        top.pack(fill=tk.X)
 
-        # Ensure initial window is wide enough to show toolbar fully
+        # Group A: Players and names
+        grp_players = ttk.Frame(top)
+        ttk.Label(grp_players, text="Players:").pack(side=tk.LEFT)
+        tk.Spinbox(grp_players, from_=2, to=4, width=4, textvariable=self.num_players, command=self.on_num_players_change).pack(side=tk.LEFT, padx=(4,10))
+        for i in range(4):
+            ttk.Entry(grp_players, textvariable=self.player_names[i], width=14).pack(side=tk.LEFT, padx=4)
+
+        # Group B: Games/Turns
+        grp_games = ttk.Frame(top)
+        ttk.Label(grp_games, text="#Games:").pack(side=tk.LEFT, padx=(0,4))
+        ttk.Entry(grp_games, textvariable=self.games_var, width=8).pack(side=tk.LEFT)
+        ttk.Label(grp_games, text="Max Turns:").pack(side=tk.LEFT, padx=(8,4))
+        ttk.Entry(grp_games, textvariable=self.turns_var, width=8).pack(side=tk.LEFT)
+
+        # Group C: Run controls
+        grp_run = ttk.Frame(top)
+        self.run_btn = ttk.Button(grp_run, text="Run Simulation", command=self.run_simulation, style="primary.TButton")
+        self.run_btn.pack(side=tk.LEFT)
+        self.run_one_btn = ttk.Button(grp_run, text="Run One Game", command=self.run_single_game)
+        self.run_one_btn.pack(side=tk.LEFT, padx=(6,0))
+        self.rand_btn = ttk.Button(grp_run, text="Random Map", command=self.randomize_full_board)
+        self.rand_btn.pack(side=tk.LEFT, padx=(6,0))
+
+        # Group D: Bot strength + MCTS params
+        grp_bots = ttk.Frame(top)
+        self.use_strong_bots = tk.BooleanVar(value=True)
+        ttk.Checkbutton(grp_bots, text="Strong Bots", variable=self.use_strong_bots).pack(side=tk.LEFT, padx=(0,8))
+        ttk.Label(grp_bots, text="Beam:").pack(side=tk.LEFT)
+        self.mcts_beam_var = tk.IntVar(value=6)
+        tk.Spinbox(grp_bots, from_=1, to=64, width=4, textvariable=self.mcts_beam_var).pack(side=tk.LEFT, padx=(2,8))
+        ttk.Label(grp_bots, text="Depth:").pack(side=tk.LEFT)
+        self.mcts_depth_var = tk.IntVar(value=3)
+        tk.Spinbox(grp_bots, from_=1, to=10, width=4, textvariable=self.mcts_depth_var).pack(side=tk.LEFT, padx=(2,0))
+
+        # Group E: Save/Open/Image
+        grp_io = ttk.Frame(top)
+        ttk.Button(grp_io, text="Save", command=self.save_board).pack(side=tk.LEFT)
+        ttk.Button(grp_io, text="Open", command=self.load_board).pack(side=tk.LEFT, padx=(4,0))
+        ttk.Button(grp_io, text="From Image", command=self.import_from_image).pack(side=tk.LEFT, padx=(4,0))
+
+        # Group F: Status
+        grp_status = ttk.Frame(top)
+        self.status = ttk.Label(grp_status, text="Idle", anchor=tk.W)
+        self.status.pack(side=tk.LEFT)
+
+        # Reflow logic: place groups left-to-right until width is exceeded, then wrap to row2
+        groups = [grp_players, grp_games, grp_run, grp_bots, grp_io, grp_status]
+
+        def layout_toolbar(_=None):
+            # Recompute responsive layout using grid within a single parent frame
+            try:
+                self.root.update_idletasks()
+            except Exception:
+                pass
+            for g in groups:
+                try:
+                    g.grid_forget()
+                except Exception:
+                    pass
+            cw = max(200, top_container.winfo_width() or self.root.winfo_width() or 1200)
+            if cw < 1200:
+                # Deterministic two rows: first four groups on row 0, then remaining on row 1
+                c = 0
+                for g in groups[:4]:
+                    g.grid(row=0, column=c, sticky=tk.W, padx=6, pady=2)
+                    c += 1
+                c = 0
+                for g in groups[4:]:
+                    g.grid(row=1, column=c, sticky=tk.W, padx=6, pady=2)
+                    c += 1
+                return
+            # Single row with wrapping as needed
+            used = 0
+            row = 0
+            col = 0
+            for g in groups:
+                gw = g.winfo_reqwidth() or g.winfo_width() or 200
+                if used and used + gw + 12 > cw:
+                    row += 1
+                    col = 0
+                    used = 0
+                g.grid(row=row, column=col, sticky=tk.W, padx=6, pady=2)
+                used += gw + 12
+                col += 1
+        # Recompute layout on container resize and once after creation
+        top_container.bind("<Configure>", layout_toolbar)
+        self.root.after(0, layout_toolbar)
+        # Toolbar content is now managed by the reflow groups above (row1/row2)
+
+        # Reasonable minimum size that fits small displays
         try:
             self.root.update_idletasks()
-            min_w = max(self.root.winfo_width(), top.winfo_reqwidth() + 24)
-            min_h = max(self.root.winfo_height(), 720)
+            sw = self.root.winfo_screenwidth() or 800
+            sh = self.root.winfo_screenheight() or 600
+            min_w = max(640, min(900, sw - 120))
+            min_h = max(480, min(600, sh - 160))
             self.root.minsize(min_w, min_h)
         except Exception:
-            pass
+            self.root.minsize(640, 480)
 
         body = tk.PanedWindow(root, sashrelief=tk.RAISED, sashwidth=6)
         body.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
@@ -118,12 +190,34 @@ class BoardEditorGUI:
         # Left: canvas
         left = ttk.Frame(body)
         body.add(left)
-        self.canvas = tk.Canvas(left, width=720, height=640, bg="#0e1320", highlightthickness=0)
+        self.canvas = tk.Canvas(left, width=640, height=540, bg="#0e1320", highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        # Right: palette and results
-        right = ttk.Frame(body)
-        body.add(right)
+        # Right: palette and results inside a vertically scrollable container
+        right_container = ttk.Frame(body)
+        body.add(right_container)
+        # Ensure reasonable minimum sizes for panes to avoid total collapse on small windows
+        try:
+            body.paneconfigure(left, minsize=200)
+            body.paneconfigure(right_container, minsize=260)
+        except Exception:
+            pass
+        right_canvas = tk.Canvas(right_container, highlightthickness=0)
+        right_yscroll = ttk.Scrollbar(right_container, orient=tk.VERTICAL, command=right_canvas.yview)
+        right_canvas.configure(yscrollcommand=right_yscroll.set)
+        right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        right_yscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        right = ttk.Frame(right_canvas)
+        _right_win = right_canvas.create_window((0, 0), window=right, anchor="nw")
+        def _right_conf(_=None):
+            right_canvas.configure(scrollregion=right_canvas.bbox("all"))
+        right.bind("<Configure>", _right_conf)
+        def _right_container_conf(event):
+            try:
+                right_canvas.itemconfigure(_right_win, width=event.width - right_yscroll.winfo_width())
+            except Exception:
+                pass
+        right_container.bind("<Configure>", _right_container_conf)
         bar = ttk.Frame(right)
         bar.pack(fill=tk.X)
         self.enforce_rules = tk.BooleanVar(value=True)
