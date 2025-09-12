@@ -413,6 +413,9 @@ class Game:
           responder never does worse than their own bank/port alternative.
         - Accepts only if both players' best-build deficit improves (strictly for the proposer,
           non-worse-and-usually-better for responder), preferring Pareto-improving trades.
+        - Incorporates opponent progress: avoid empowering the VP leader, and reject trades
+          that enable the responder to immediately build city/settlement if they are close to
+          winning.
         """
         # Early exits
         if not responder.hand:
@@ -436,6 +439,11 @@ class Game:
         best_choice = None  # (score, give, want, k)
         prop_before = self._best_build_deficit(proposer.hand)
         resp_before = self._best_build_deficit(responder.hand)
+        # Threat assessment for responder
+        all_others = [p for p in self.players if p.id != proposer.id]
+        leader = max(all_others, key=lambda p: (p.vp + p.hidden_vp, sum(p.hand.values()), -p.id), default=None)
+        responder_is_leader = (leader is not None and leader.id == responder.id)
+        responder_progress = (responder.vp + responder.hidden_vp) / max(1, self.target_vp)
 
         # Candidate gives: anything proposer holds, excluding the want
         give_candidates = [r for r,c in proposer.hand.items() if c > 0]
@@ -484,8 +492,30 @@ class Game:
                     if resp_after > resp_before:
                         continue
 
-                    # Score: prioritize mutual improvement, then smaller k (cheaper for proposer)
-                    score = 10 * prop_gain + 6 * resp_gain - 0.1 * k
+                    # Additional guardrails: don't enable an about-to-win leader to build immediately
+                    danger_penalty = 0.0
+                    if responder_is_leader or responder_progress >= 0.7:
+                        # Would the responder be able to immediately build city/settlement after this trade?
+                        can_city = (
+                            rh["ore"] >= BUILD_COST["city"]["ore"] and
+                            rh["grain"] >= BUILD_COST["city"]["grain"] and
+                            responder.cities_left > 0 and len(responder.settlements) > 0
+                        )
+                        # Settlement requires network connectivity; check legal spots
+                        can_settle = False
+                        if responder.settlements_left > 0:
+                            try:
+                                r_spots = self.legal_settlement_spots(responder, [p for p in self.players if p.id != responder.id], require_connection=True)
+                            except Exception:
+                                r_spots = []
+                            can_settle = (r_spots and all(rh[r] >= BUILD_COST["settlement"][r] for r in BUILD_COST["settlement"]))
+                        if can_city or can_settle:
+                            # Heavy penalty to avoid such trades
+                            danger_penalty += 5.0
+
+                    # Score: prioritize our improvement; discount responder's gain more if they're leading
+                    resp_gain_weight = 6.0 * (0.4 if responder_is_leader else 1.0) * (0.8 if responder_progress < 0.6 else 1.0)
+                    score = 10 * prop_gain + resp_gain_weight * resp_gain - 0.1 * k - danger_penalty
                     if best_choice is None or score > best_choice[0]:
                         best_choice = (score, give, want, k)
 
@@ -506,6 +536,37 @@ class Game:
         self.log(f"{proposer.name} trades {ratio_txt} P2P with {responder.name}: gives {k} {give} for 1 {want}.")
         self.snapshot(f"P2P {ratio_txt} {proposer.name}:{give}->{want}")
         return True
+
+    def settlement_block_score(self, player: Player, others: List[Player], nid: int) -> float:
+        """Score how much a settlement at nid would disrupt opponents' expansion/road plans.
+
+        - Rewards nodes that would sit at a junction of multiple opponent roads (potential road cut).
+        - Scales weight for opponents with higher VP (progress/score).
+        - Returns 0 if the distance rule is violated (impossible to settle there now).
+        """
+        # Distance rule: if any adjacent node has any settlement/city, it's illegal to settle
+        for p in self.players:
+            if nid in p.settlements or nid in p.cities:
+                return 0.0
+        for m in self.board.adj.get(nid, ()):  # neighboring intersections
+            for p in self.players:
+                if m in p.settlements or m in p.cities:
+                    return 0.0
+        # Count opponent road incidence at nid
+        score = 0.0
+        for opp in others:
+            inc = 0
+            for (u,v) in opp.roads:
+                if u == nid or v == nid:
+                    inc += 1
+            if inc <= 0:
+                continue
+            # VP-progress weight
+            w = 1.0 + 0.5 * ((opp.vp + opp.hidden_vp) / max(1, self.target_vp))
+            # Extra if at least two incident roads from same opponent (junction)
+            bonus = 1.0 if inc >= 2 else 0.0
+            score += w * (0.6 * inc + bonus)
+        return score
 
     def all_roads(self) -> Set[Tuple[int,int]]:
         roads = set()
@@ -707,7 +768,13 @@ class Game:
                 if sum(opp.hand.values()) > 0:
                     victims.append(opp)
         if victims:
-            target_opp = self.rng.choice(victims)
+            # Prefer stealing from opponents with higher VP/progress and larger hands
+            def victim_key(op: Player):
+                progress = op.vp + op.hidden_vp
+                hand = sum(op.hand.values())
+                specials = (1 if op.has_largest_army else 0) + (1 if op.has_longest_road else 0)
+                return (progress, specials, hand)
+            target_opp = max(victims, key=victim_key)
             stolen = self.rng.choice(list(target_opp.hand.elements()))
             target_opp.hand[stolen] -= 1
             if target_opp.hand[stolen] == 0: del target_opp.hand[stolen]
@@ -974,6 +1041,11 @@ class HeuristicBot:
             # Penalize contested targets so multiple bots diversify
             threat = node_threat_level(far)
             base -= 1.2 * threat
+            # Encourage paths toward nodes that could block opponent roads (choke points)
+            try:
+                base += 0.8 * game.settlement_block_score(player, others, far)
+            except Exception:
+                pass
             return base
         return max(candidates, key=edge_score)
 
@@ -1087,10 +1159,23 @@ class HeuristicBot:
                         nb = max(next_best(u), next_best(v))
                         # Contested penalty from both ends (min threat among ends used)
                         thr = min(node_threat_level(u), node_threat_level(v))
-                        return -1.0 + 0.5 * nb - 1.0 * thr
+                        score = -1.0 + 0.5 * nb - 1.0 * thr
+                        try:
+                            score += 0.6 * max(
+                                game.settlement_block_score(player, others, u),
+                                game.settlement_block_score(player, others, v)
+                            )
+                        except Exception:
+                            pass
+                        return score
                     # Prefer edges whose endpoint is immediately open for a settlement
                     su = game.node_expectation(u) + (2.0 if u_open else 0.0) - 1.2 * node_threat_level(u)
                     sv = game.node_expectation(v) + (2.0 if v_open else 0.0) - 1.2 * node_threat_level(v)
+                    try:
+                        su += 0.8 * game.settlement_block_score(player, others, u)
+                        sv += 0.8 * game.settlement_block_score(player, others, v)
+                    except Exception:
+                        pass
                     return max(su, sv)
                 best_r = max(legal_r, key=road_score)
                 pay_cost(player.hand, BUILD_COST["road"]); player.roads.add(best_r); player.roads_left -= 1
@@ -1122,7 +1207,13 @@ class HeuristicBot:
         while True:
             spots = game.legal_settlement_spots(player, others, require_connection=True)
             if spots and can_afford(player.hand, BUILD_COST["settlement"]) and player.settlements_left>0:
-                nid = max(spots, key=lambda n: game.node_expectation(n))
+                def settle_score(n):
+                    try:
+                        block = game.settlement_block_score(player, others, n)
+                    except Exception:
+                        block = 0.0
+                    return game.node_expectation(n) + 1.5 * block
+                nid = max(spots, key=settle_score)
                 pay_cost(player.hand, BUILD_COST["settlement"])
                 player.settlements.add(nid); player.vp += 1; player.settlements_left -= 1
                 builds += 1
@@ -1170,9 +1261,22 @@ class HeuristicBot:
                         return max([game.node_expectation(x) for x in game.board.adj.get(n, ()) if node_open_for_settlement(x)], default=0)
                     nb = max(next_best(u), next_best(v))
                     thr = min(node_threat_level(u), node_threat_level(v))
-                    return -1.0 + 0.5 * nb - 1.0 * thr
+                    score = -1.0 + 0.5 * nb - 1.0 * thr
+                    try:
+                        score += 0.6 * max(
+                            game.settlement_block_score(player, others, u),
+                            game.settlement_block_score(player, others, v)
+                        )
+                    except Exception:
+                        pass
+                    return score
                 su = game.node_expectation(u) + (2.0 if u_open else 0.0) - 1.2 * node_threat_level(u)
                 sv = game.node_expectation(v) + (2.0 if v_open else 0.0) - 1.2 * node_threat_level(v)
+                try:
+                    su += 0.8 * game.settlement_block_score(player, others, u)
+                    sv += 0.8 * game.settlement_block_score(player, others, v)
+                except Exception:
+                    pass
                 return max(su, sv)
             choice = max(legal, key=road_score)
             pay_cost(player.hand, BUILD_COST["road"]); player.roads.add(choice); player.roads_left -= 1
@@ -1275,7 +1379,13 @@ class MCTSBot(HeuristicBot):
             # build settlement
             spots = game.legal_settlement_spots(p, others, require_connection=True)
             if spots and can_afford(p.hand, BUILD_COST["settlement"]) and p.settlements_left>0:
-                best_n = max(spots, key=lambda n: game.node_expectation(n)); acts.append(("build_settlement", best_n))
+                def settle_score(n):
+                    try:
+                        block = game.settlement_block_score(player, others, n)
+                    except Exception:
+                        block = 0.0
+                    return game.node_expectation(n) + 1.0 * block
+                best_n = max(spots, key=settle_score); acts.append(("build_settlement", best_n))
             # build road
             roads = game.legal_road_spots(p)
             if roads and can_afford(p.hand, BUILD_COST["road"]) and p.roads_left>0:
@@ -1295,9 +1405,23 @@ class MCTSBot(HeuristicBot):
                         def next_best(n):
                             return max([game.node_expectation(x) for x in game.board.adj.get(n, ()) if node_open_for_settlement(x)], default=0)
                         nb = max(next_best(u), next_best(v))
-                        return -1.0 + 0.5 * nb
-                    return max(game.node_expectation(u) + (2.0 if u_open else 0.0),
-                               game.node_expectation(v) + (2.0 if v_open else 0.0))
+                        sc = -1.0 + 0.5 * nb
+                        try:
+                            sc += 0.5 * max(
+                                game.settlement_block_score(player, others, u),
+                                game.settlement_block_score(player, others, v)
+                            )
+                        except Exception:
+                            pass
+                        return sc
+                    su = game.node_expectation(u) + (2.0 if u_open else 0.0)
+                    sv = game.node_expectation(v) + (2.0 if v_open else 0.0)
+                    try:
+                        su += 0.7 * game.settlement_block_score(player, others, u)
+                        sv += 0.7 * game.settlement_block_score(player, others, v)
+                    except Exception:
+                        pass
+                    return max(su, sv)
                 acts.append(("build_road", max(roads, key=score_edge)))
             # buy dev
             if can_afford(p.hand, BUILD_COST["dev"]) and sim['dev_deck']:
@@ -1524,4 +1648,3 @@ if __name__ == "__main__":
             import math
             elo_diff = 400 * math.log10(wins[0] / wins[1])
             print(f"  Approx Elo diff P0-P1: {elo_diff:.1f}")
-
